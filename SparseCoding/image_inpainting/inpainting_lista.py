@@ -98,6 +98,7 @@ def train_lista(D, Y, maskvec, s, img_ori, blksize, overlap):
     all_zeros = torch.zeros(bs, n).cuda()
     optimizer = torch.optim.SGD(ListaNet.parameters(), lr=learning_rate, momentum=0.9)
 
+    psnr_list = np.zeros(epochs)
     for i_epoch in range(epochs):
         indexs = np.arange(K)
         np.random.shuffle(indexs)
@@ -131,17 +132,24 @@ def train_lista(D, Y, maskvec, s, img_ori, blksize, overlap):
             coef_pt = ListaNet(Y)
             coef = coef_pt.cpu().detach().numpy().T
 
+        # testing
         recovered_img = patch2im_for_inpainting(patch_vecs=255.0 * np.matmul(D.cpu().detach().numpy(), coef),
                                                 mask_vecs=maskvec,
                                                 imgsize=img_ori.shape,
                                                 blksize=blksize, overlap=overlap)
 
         psnr = PSNR(img_ori, recovered_img)
+        psnr_list[i_epoch] = psnr
 
-        print('[INFO] Epoch: {}/{} loss: {:.3f} ({:.3f}, {:.3f}) PSNR: {:.2f}'.format(i_epoch, epochs,
+        print('[INFO] Epoch: {}/{} loss: {:.3f} ({:f}, {:f}) PSNR: {:.2f}'.format(i_epoch, epochs,
                                                                                       epoch_loss / iter_epoch,
                                                                                       epoch_loss1 / iter_epoch,
                                                                                       epoch_loss2 / iter_epoch,
                                                                                       psnr))
 
+        if psnr > 30:
+            print('[INFO] => ListaNet best PSNR:{:.2f}'.format(psnr_list.max()))
+            return ListaNet
+
+    print('[INFO] => ListaNet best PSNR:{:.2f}'.format(psnr_list.max()))
     return ListaNet
