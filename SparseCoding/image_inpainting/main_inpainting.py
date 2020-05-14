@@ -16,7 +16,7 @@ if __name__ == '__main__':
     overlap = 3  # image patch overlap stride
     maxiter = 5
 
-    method = 'LSTM'
+    method = 'LISTA_LSTM'
 
     if method == 'OMP':
         img_ori, masked_img, recovered_img = inpainting_omp.inpainting_omp(missing_pixels, dicsize, n_nonzero_coefs,
