@@ -131,7 +131,6 @@ def train_lista(D, Y, maskvec, s, img_ori, blksize, overlap):
             coef_pt = ListaNet(Y)
             coef = coef_pt.cpu().detach().numpy().T
 
-        # testing
         recovered_img = patch2im_for_inpainting(patch_vecs=255.0 * np.matmul(D.cpu().detach().numpy(), coef),
                                                 mask_vecs=maskvec,
                                                 imgsize=img_ori.shape,
