@@ -4,14 +4,13 @@ from dataset.generate_inpainting_data import generate_inpainting_data, load_inpa
 from utils.utils_dict import get_init_dict, get_init_imagedict
 from utils.utils_patches import patch2im_for_inpainting
 from models.LISTA_model import LISTA
+from utils.utils_error import PSNR
 
 import torch.nn as nn
 import os
 
 
 def inpainting_lista(missing_pixels, dicsize, n_nonzero_coefs, blksize, overlap, maxiter, grayimg):
-
-
     img_ori, masked_img, patchvec, maskvec = generate_inpainting_data(missing_pixels=missing_pixels,
                                                                       blksize=blksize, overlap=overlap, grayimg=grayimg)
 
@@ -30,16 +29,17 @@ def inpainting_lista(missing_pixels, dicsize, n_nonzero_coefs, blksize, overlap,
     Y = patchvec
 
     # training
-    model = train_lista(D, Y, maskvec, s)
+    model = train_lista(D, Y, maskvec, s, img_ori, blksize, overlap)
 
     # testing
     with torch.no_grad():
-        Y_pt = torch.from_numpy(Y.T/255.0).cuda()
+        Y_pt = torch.from_numpy(Y.T / 255.0).cuda()
         coef_pt = model(Y_pt)
         coef = coef_pt.cpu().detach().numpy().T
 
     # testing
-    recovered_img = patch2im_for_inpainting(patch_vecs=255.0*np.matmul(D, coef), mask_vecs=maskvec, imgsize=img_ori.shape,
+    recovered_img = patch2im_for_inpainting(patch_vecs=255.0 * np.matmul(D, coef), mask_vecs=maskvec,
+                                            imgsize=img_ori.shape,
                                             blksize=blksize, overlap=overlap)
 
     # save results
@@ -53,7 +53,7 @@ def inpainting_lista(missing_pixels, dicsize, n_nonzero_coefs, blksize, overlap,
     return img_ori, masked_img, recovered_img
 
 
-def train_lista(D, Y, maskvec, s, epochs=50):
+def train_lista(D, Y, maskvec, s, img_ori, blksize, overlap):
     """
     Trianing LISTA network.
 
@@ -64,16 +64,18 @@ def train_lista(D, Y, maskvec, s, epochs=50):
     :return:
     """
 
-    # pre-settings
+    # training settings
     bs = 128
     learning_rate = 1e-2
+    epochs = 50
+
     K = Y.shape[1]
     iter_epoch = K // bs
 
     eig, eig_vector = np.linalg.eig(D.T.dot(D))
     L = np.max(eig)  # Lipschitz constant
 
-    theta = s/L
+    theta = s / L
     m, n = D.shape
 
     # normalize image
@@ -81,20 +83,20 @@ def train_lista(D, Y, maskvec, s, epochs=50):
 
     # convert the data into tensors
     Y = Y.T  # batch should be the 0-dim in pytorch
-    Y = torch.from_numpy(Y).float()
+    Y = torch.from_numpy(Y).float().cuda()
     D = torch.from_numpy(D).float().cuda()
     maskvec = torch.from_numpy(maskvec.T).cuda()
 
     # network initialization
-    net = LISTA(m, n, D, L, theta, max_iter=30)
-    net.weights_init()
-    net = net.cuda()
+    ListaNet = LISTA(m, n, D, L, theta, max_iter=30)
+    ListaNet.weights_init()
+    ListaNet = ListaNet.cuda()
 
     # build the optimizer and criterion
     criterion1 = nn.MSELoss()
     criterion2 = nn.L1Loss()
     all_zeros = torch.zeros(bs, n).cuda()
-    optimizer = torch.optim.SGD(net.parameters(), lr=learning_rate, momentum=0.9)
+    optimizer = torch.optim.SGD(ListaNet.parameters(), lr=learning_rate, momentum=0.9)
 
     for i_epoch in range(epochs):
         indexs = np.arange(K)
@@ -104,16 +106,16 @@ def train_lista(D, Y, maskvec, s, epochs=50):
         epoch_loss1 = 0
         epoch_loss2 = 0
         for i_iter in range(iter_epoch):
-            Y_batch = Y[indexs[i_iter * bs:(i_iter + 1) * bs]].cuda()
+            Y_batch = Y[indexs[i_iter * bs:(i_iter + 1) * bs]]
             mask = maskvec[indexs[i_iter * bs:(i_iter + 1) * bs]]
 
             # get the outputs
-            X = net(Y_batch)
+            X = ListaNet(Y_batch)
             Y_recons = torch.mm(X, D.T)
 
             # compute the losss
-            loss1 = criterion1(Y_batch*mask, Y_recons*mask)
-            loss2 = (1-s) * criterion2(X, all_zeros)
+            loss1 = criterion1(Y_batch * mask, Y_recons * mask)
+            loss2 = (1 - s) * criterion2(X, all_zeros)
             loss = loss1 + loss2
 
             loss.backward()
@@ -124,9 +126,23 @@ def train_lista(D, Y, maskvec, s, epochs=50):
             epoch_loss2 += loss2.item()
             epoch_loss += loss.item()
 
-        print('[INFO] Epoch: {}/{} loss: {:.3f} ({:.3f}, {:.3f})'.format(i_epoch, epochs,
-                                                                         epoch_loss/iter_epoch,
-                                                                         epoch_loss1/iter_epoch, epoch_loss2/iter_epoch))
+        # validation
+        with torch.no_grad():
+            coef_pt = ListaNet(Y)
+            coef = coef_pt.cpu().detach().numpy().T
 
+        # testing
+        recovered_img = patch2im_for_inpainting(patch_vecs=255.0 * np.matmul(D.cpu().detach().numpy(), coef),
+                                                mask_vecs=maskvec,
+                                                imgsize=img_ori.shape,
+                                                blksize=blksize, overlap=overlap)
 
-    return net
+        psnr = PSNR(img_ori, recovered_img)
+
+        print('[INFO] Epoch: {}/{} loss: {:.3f} ({:.3f}, {:.3f}) PSNR: {:.2f}'.format(i_epoch, epochs,
+                                                                                      epoch_loss / iter_epoch,
+                                                                                      epoch_loss1 / iter_epoch,
+                                                                                      epoch_loss2 / iter_epoch,
+                                                                                      psnr))
+
+    return ListaNet
